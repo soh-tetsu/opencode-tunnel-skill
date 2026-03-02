@@ -71,15 +71,15 @@ The agent will:
 
 Every tunnel is protected with Basic Auth enforced by ngrok. When your browser prompts for credentials:
 
-| Field        | Value                                          |
-| ------------ | ---------------------------------------------- |
-| **Username** | `opencode`                                     |
-| **Password** | 6-digit code shown at creation (e.g. `421481`) |
+| Field        | Value                                            |
+| ------------ | ------------------------------------------------ |
+| **Username** | `opencode`                                       |
+| **Password** | 8-digit code shown at creation (e.g. `12341234`) |
 
 The credentials are displayed when the tunnel is created:
 
 ```
-  Login:        opencode / 421481  🔐
+  Login:        opencode / 12341234  🔐
 ```
 
 And again any time with:
@@ -162,11 +162,16 @@ ngrok handles SSE correctly by preserving the HTTP/1.1 chunked transfer encoding
 
 ## Limitations
 
-- **macOS only** — Linux and Windows support planned for a future release
+- **macOS only** — Linux and Windows support planned
 - Tunnel URL changes on each restart (ngrok free tunnels are ephemeral)
-- Only exposes the currently running OpenCode session
 - Local machine must stay online for the tunnel to work
-- ngrok free tier shows an interstitial on first visit per browser session
+- ngrok free tier may show an interstitial on first visit per browser session
+
+## Planned / Future Work
+
+- **Linux & Windows support**
+- **Tailscale support** — expose the session over a private Tailscale network instead of the public internet
+- **Additional tunnel providers** — pluggable backend beyond ngrok
 
 ## Contributing
 

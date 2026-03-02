@@ -282,6 +282,7 @@ function startTunnel(port, logPath, password) {
     const tunnelProc = spawn('ngrok', [
       'http', String(port),
       '--basic-auth', `opencode:${password}`,
+      '--request-header-add', 'ngrok-skip-browser-warning:true',
       '--log', logPath,
       '--log-format', 'json'
     ], {
