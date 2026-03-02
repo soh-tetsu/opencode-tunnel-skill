@@ -3,7 +3,7 @@
 /**
  * OpenCode Tunnel Skill
  * 
- * Exposes a specific OpenCode session to the public internet via Cloudflare Tunnel.
+ * Exposes a specific OpenCode session to the public internet via a tunnel.
  * 
  * Usage:
  *   node tunnel.js                    - Create a new tunnel (interactive)
@@ -59,9 +59,9 @@ function generateTunnelId() {
   return `tun_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 }
 
-// Generate 6-digit numeric password
+// Generate 8-digit numeric password (min 8 chars required by tunnel provider)
 function generatePassword() {
-  return String(Math.floor(100000 + Math.random() * 900000));
+  return String(Math.floor(10000000 + Math.random() * 90000000));
 }
 
 // Check if process is running
@@ -80,17 +80,24 @@ function cleanupDeadTunnels() {
   let modified = false;
   
   for (const [id, tunnel] of Object.entries(tunnels)) {
-    const opencodeRunning = isProcessRunning(tunnel.opencodePid);
     const tunnelRunning = isProcessRunning(tunnel.tunnelPid);
+    // opencodePid may be null if tunneling an existing process
+    const opencodeRunning = tunnel.opencodePid ? isProcessRunning(tunnel.opencodePid) : true;
     
-    if (!opencodeRunning && !tunnelRunning) {
+    if (!tunnelRunning && !opencodeRunning) {
       delete tunnels[id];
       modified = true;
-    } else if (!opencodeRunning || !tunnelRunning) {
-      // Partially dead - kill the remaining process
+    } else if (!tunnelRunning) {
+      // Tunnel died - kill managed opencode if we own it
       try {
-        if (opencodeRunning) process.kill(tunnel.opencodePid, 'SIGTERM');
-        if (tunnelRunning) process.kill(tunnel.tunnelPid, 'SIGTERM');
+        if (tunnel.opencodePid) process.kill(tunnel.opencodePid, 'SIGTERM');
+      } catch (_e) {}
+      delete tunnels[id];
+      modified = true;
+    } else if (tunnel.opencodePid && !opencodeRunning) {
+      // Our opencode died but tunnel still up - kill tunnel too
+      try {
+        process.kill(tunnel.tunnelPid, 'SIGTERM');
       } catch (_e) {}
       delete tunnels[id];
       modified = true;
@@ -121,12 +128,14 @@ async function listTunnels() {
   
   const sortedEntries = tunnelEntries.sort(([, a], [, b]) => a.createdAt - b.createdAt);
   for (const [id, tunnel] of sortedEntries) {
-    const status = (isProcessRunning(tunnel.opencodePid) && isProcessRunning(tunnel.tunnelPid)) ? '🟢 RUNNING' : '🟡 CHECKING';
+    const tunnelOk = isProcessRunning(tunnel.tunnelPid);
+    const opencodeOk = tunnel.opencodePid ? isProcessRunning(tunnel.opencodePid) : true;
+    const status = (tunnelOk && opencodeOk) ? '🟢 RUNNING' : '🔴 DEAD';
     const createdLabel = new Date(tunnel.createdAt).toISOString().replace('T', ' ').slice(0, 19);
     console.log(`\n  Tunnel ID:    ${id}  (created ${createdLabel})`);
     console.log(`  Status:       ${status}`);
     console.log(`  URL:          ${tunnel.url}`);
-    console.log(`  Login:        opencode / ${tunnel.password || '(none)'}  🔐`);
+    console.log(`  Login:        ${tunnel.password ? `opencode / ${tunnel.password}  🔐` : '(no auth - existing opencode)'}` );
     console.log(`  Session:      ${tunnel.sessionTitle}`);
     console.log(`  Project:      ${tunnel.projectPath}`);
     console.log(`  Local Port:   ${tunnel.localPort}`);
@@ -155,7 +164,7 @@ async function stopTunnel(tunnelId) {
     try {
       if (isProcessRunning(tunnel.tunnelPid)) {
         process.kill(tunnel.tunnelPid, 'SIGTERM');
-        log(`Killed cloudflared (PID: ${tunnel.tunnelPid})`);
+        log(`Killed tunnel process (PID: ${tunnel.tunnelPid})`);
       }
     } catch (_e) {}
     
@@ -281,121 +290,49 @@ function buildWebUrl(sessionDir, sessionId) {
   return `/${base64Dir}/session/${sessionId}`;
 }
 
-// Find available port
-function findAvailablePort(startPort = 5000) {
-  return new Promise((resolve) => {
-    const net = require('node:net');
-    const server = net.createServer();
-    server.listen(startPort, () => { server.once('close', () => resolve(startPort)); server.close(); });
-    server.on('error', () => resolve(findAvailablePort(startPort + 1)));
-  });
-}
-
-// Start new opencode with session (detached)
-function startOpenCodeWithSession(projectDir, sessionId, port, password) {
+// Start tunnel - fully detached, writes JSON logs to a logfile
+// Returns { url, pid } after extracting the URL from the log
+function startTunnel(port, logPath, password) {
   return new Promise((resolve, reject) => {
-    log(`Starting opencode with session ${sessionId} on port ${port}...`);
+    log('Starting tunnel...');
     
-    // Find the actual opencode binary (not the node wrapper)
-    let opencodeBinary;
-    try {
-      // Try to find the binary by resolving the npm wrapper symlink
-      const { execSync } = require('node:child_process');
-      const wrapperPath = execSync('which opencode', { encoding: 'utf8' }).trim();
-      // Resolve symlink so dirname gives the real bin directory
-      const resolvedPath = fs.realpathSync(wrapperPath);
-      const binDir = path.dirname(resolvedPath);
-      const actualBinary = path.join(binDir, '.opencode');
-      if (fs.existsSync(actualBinary)) {
-        opencodeBinary = actualBinary;
-      } else {
-        throw new Error('Binary not found');
-      }
-    } catch (_e) {
-      // Fallback: use the wrapper (it will exec the real binary)
-      opencodeBinary = 'opencode';
-    }
-    
-    const opencode = spawn(opencodeBinary, ['serve', '--port', port.toString(), '--hostname', '127.0.0.1'], {
-      cwd: projectDir,
-      env: { ...process.env, OPENCODE_SERVER_PASSWORD: password },
-      stdio: ['ignore', 'ignore', 'ignore'],
+    // Fully detach: write JSON logs to file, no stdio pipes
+    const tunnelProc = spawn('ngrok', [
+      'http', String(port),
+      '--basic-auth', `opencode:${password}`,
+      '--log', logPath,
+      '--log-format', 'json'
+    ], {
+      stdio: 'ignore',
       detached: true
     });
-    opencode.on('error', (err) => reject(err));
+    tunnelProc.on('error', (err) => reject(err));
+    tunnelProc.unref();
     
+    const pid = tunnelProc.pid;
     let attempts = 0;
-    const check = setInterval(() => {
+    const maxAttempts = 30;
+    
+    // Poll logfile for the 'started tunnel' JSON event containing the URL
+    const timer = setInterval(() => {
       attempts++;
-      http.get(`http://localhost:${port}/global/health`, (res) => {
-        if (res.statusCode === 200 || res.statusCode === 401) { 
-          clearInterval(check);
-          log(`Server ready on port ${port} (PID: ${opencode.pid})`);
-          opencode.unref(); // Allow parent to exit
-          resolve({ port, pid: opencode.pid }); 
+      try {
+        const logContent = fs.readFileSync(logPath, 'utf8');
+        // Look for the started tunnel event with url field
+        const m = logContent.match(/"url":"(https:\/\/[^"]+)"/);
+        if (m) {
+          clearInterval(timer);
+          const url = m[1];
+          log(`Tunnel ready: ${url} (PID: ${pid})`);
+          resolve({ url, pid });
+          return;
         }
-      }).on('error', () => { 
-        if (attempts > 30) { 
-          clearInterval(check);
-          opencode.unref(); // Allow parent to exit
-          resolve({ port, pid: opencode.pid });
-        }
-      });
-    }, 1000);
-  });
-}
-
-// Start Cloudflare tunnel
-function startTunnel(port) {
-  return new Promise((resolve, reject) => {
-    log('Starting Cloudflare tunnel...');
-    
-    const cloudflared = spawn('cloudflared', ['tunnel', '--url', `http://localhost:${port}`], {
-      stdio: ['ignore', 'ignore', 'pipe'],
-      detached: true  // Keep tunnel running after parent exits
-    });
-    
-    // Unref immediately to allow parent to exit without killing the child
-    cloudflared.unref();
-    
-    let url = null;
-    let stderr = '';
-    let resolved = false;
-    
-    // Read stderr to extract URL
-    cloudflared.stderr.on('data', (data) => { 
-      stderr += data.toString(); 
-      const m = stderr.match(/https:\/\/[\w-]+\.trycloudflare\.com/); 
-      if (m && !url) url = m[0]; 
-    });
-    
-    cloudflared.on('error', (err) => {
-      if (!resolved) {
-        resolved = true;
-        reject(err);
-      }
-    });
-    
-    cloudflared.on('exit', (code) => {
-      if (!resolved && !url) {
-        resolved = true;
-        reject(new Error(`cloudflared exited with code ${code}`));
-      }
-    });
-    
-    let attempts = 0;
-    const check = setInterval(() => {
-      attempts++;
-      if (url && !resolved) { 
-        resolved = true;
-        clearInterval(check);
-        log(`Tunnel ready: ${url} (PID: ${cloudflared.pid})`);
-        resolve({ url, pid: cloudflared.pid, process: cloudflared }); 
-      } else if (attempts > 30 && !resolved) {
-        resolved = true;
-        clearInterval(check);
-        try { cloudflared.kill(); } catch (_e) {}
-        reject(new Error('Tunnel timeout - could not extract URL from cloudflared'));
+      } catch (_e) {}
+      
+      if (attempts >= maxAttempts) {
+        clearInterval(timer);
+        try { process.kill(pid, 'SIGTERM'); } catch (_e) {}
+        reject(new Error('Timeout: could not extract tunnel URL from log'));
       }
     }, 1000);
   });
@@ -419,7 +356,7 @@ function generateQRTerminal(url) {
 async function createTunnel() {
   console.log(`\n${'='.repeat(60)}`);
   console.log('  🚀 OpenCode Tunnel Skill');
-  console.log('  Expose your session to the internet via Cloudflare');
+  console.log('  Expose your session to the internet via tunnel');
   console.log(`${'='.repeat(60)}\n`);
   
   try {
@@ -439,29 +376,30 @@ async function createTunnel() {
     const sessionDir = session.directory || pathInfo.directory;
     log(`Session directory: ${sessionDir}`);
     
+    // Tunnel the existing opencode port directly - no separate process needed
+    // This allows full read/write access (not read-only) from the browser
+    log(`Tunneling existing opencode on port ${port}...`);
+    
+    const tunnelId = generateTunnelId();
     const password = generatePassword();
-    const newPort = await findAvailablePort(5000);
-    const { port: actualPort, pid: opencodePid } = await startOpenCodeWithSession(sessionDir, sessionId, newPort, password);
+    const logPath = path.join(TUNNEL_DIR, `${tunnelId}.cf.log`);
+    const { url: tunnelUrl, pid: tunnelPid } = await startTunnel(port, logPath, password);
     
-    const { url: tunnelUrl, pid: tunnelPid } = await startTunnel(actualPort);
-    
-
     const urlPath = buildWebUrl(sessionDir, sessionId);
     const fullUrl = tunnelUrl + urlPath;
-    const tunnelId = generateTunnelId();
     const qrPath = path.join(TUNNEL_DIR, `${tunnelId}.png`);
     
     // Generate QR code
     await generateQRImage(fullUrl, qrPath);
     
-    // Save tunnel metadata
+    // Save tunnel metadata (no opencodePid - using existing process)
     const tunnels = loadTunnels();
     tunnels[tunnelId] = {
       id: tunnelId,
       url: fullUrl,
       tunnelUrl: tunnelUrl,
-      localPort: actualPort,
-      opencodePid: opencodePid,
+      localPort: port,
+      opencodePid: null,  // existing opencode - not managed by us
       tunnelPid: tunnelPid,
       sessionId: sessionId,
       sessionTitle: sessionTitle,
@@ -503,8 +441,7 @@ async function createTunnel() {
     console.log('='.repeat(60));
     
     console.log('\n  ✅ Tunnel is running in background');
-    console.log(`     Process IDs: opencode=${opencodePid}, tunnel=${tunnelPid}`);
-    console.log(`\n  🔐 Login: username=opencode  password=${password}`);
+    console.log(`     Tunneling existing opencode on port ${port} (tunnel PID: ${tunnelPid})`);
     console.log('\n  Commands:');
     console.log('     node tunnel.js list              - List all tunnels');
     console.log(`     node tunnel.js stop ${tunnelId}  - Stop this tunnel\n`);
@@ -514,9 +451,9 @@ async function createTunnel() {
       execSync(`open "${qrPath}"`);
     } catch (_e) {}
     
-    // Exit cleanly after a short delay to ensure all writes are flushed
-    setTimeout(() => process.exit(0), 100);
-    
+    // Both child processes are fully detached (unref'd) before this point.
+    // process.exit(0) is safe - it won't kill detached children.
+    process.exit(0);
   } catch (err) { 
     error(err.message); 
     process.exit(1); 

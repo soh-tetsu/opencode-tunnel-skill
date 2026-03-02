@@ -1,6 +1,6 @@
 # OpenCode Tunnel Skill
 
-Expose your OpenCode sessions to the internet via Cloudflare Tunnel for mobile and remote access.
+Expose your OpenCode session to the internet via ngrok for mobile and remote access.
 
 > **🤖 Fully Agentic:** This project — including all code, documentation, and bug fixes — was written entirely by LLM (Kimi K2.5 & Sonnet 4.6) in ([OpenCode](https://opencode.ai)).
 
@@ -8,34 +8,32 @@ Expose your OpenCode sessions to the internet via Cloudflare Tunnel for mobile a
 
 - 🌐 **Public URLs** - Access your OpenCode session from any device
 - 📱 **QR Codes** - Scan to open on mobile instantly
-- 🔒 **Password Protected** - Auto-generated credentials on every tunnel
-- 🚀 **Zero Config** - Works out of the box with your existing OpenCode setup
+- 🚀 **Zero Config** - Tunnels your existing OpenCode session directly
 - 📋 **Manage Multiple Tunnels** - List, track, and stop tunnels easily
 
 ## Requirements
 
-| Requirement                                                                                                 | Notes                                                 |
-| ----------------------------------------------------------------------------------------------------------- | ----------------------------------------------------- |
-| **macOS**                                                                                                   | Linux and Windows not yet supported                   |
-| **[Homebrew](https://brew.sh)**                                                                             | Used to install `cloudflared`                         |
-| **[cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/)** | Cloudflare Tunnel client — `brew install cloudflared` |
-| **[OpenCode](https://opencode.ai)**                                                                         | Must be running (TUI or web) before creating a tunnel |
-| **Node.js**                                                                                                 | Already available if OpenCode is installed            |
+| Requirement                                | Notes                                                 |
+| ------------------------------------------ | ----------------------------------------------------- |
+| **macOS**                                  | Linux and Windows not yet supported                   |
+| **[ngrok](https://ngrok.com/download)**    | Tunnel client — `brew install ngrok/ngrok/ngrok`      |
+| **[OpenCode](https://opencode.ai)**        | Must be running (TUI or web) before creating a tunnel |
+| **Node.js**                                | Already available if OpenCode is installed            |
 
-> **No Cloudflare account needed.** The skill uses [Cloudflare Quick Tunnels](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/do-more-with-tunnels/trycloudflare/) (free, no sign-up, no configuration). The `cloudflared` binary handles everything automatically.
-
-### Installing cloudflared
+### Installing ngrok
 
 ```bash
-# Install Homebrew (if not already installed)
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+# Install via Homebrew
+brew install ngrok/ngrok/ngrok
 
-# Install cloudflared
-brew install cloudflared
+# Authenticate (free account required for persistent tunnels)
+ngrok config add-authtoken <your-token>
 
 # Verify
-cloudflared --version
+ngrok --version
 ```
+
+Get your auth token at [dashboard.ngrok.com](https://dashboard.ngrok.com).
 
 ## Usage
 
@@ -63,14 +61,13 @@ Just ask in your OpenCode session:
 
 The agent will:
 
-1. Find your running OpenCode session
-2. Start a password-protected headless OpenCode server
-3. Create a Cloudflare tunnel
-4. Display a QR code, public URL, and login credentials
+1. Find your running OpenCode session on port 3333
+2. Create a password-protected ngrok tunnel pointing at it
+3. Display a QR code, public URL, and login credentials
 
 ### Accessing the Tunnel
 
-Every tunnel is protected with Basic authentication. When your browser prompts for credentials:
+Every tunnel is protected with Basic Auth enforced by ngrok. When your browser prompts for credentials:
 
 | Field        | Value                                          |
 | ------------ | ---------------------------------------------- |
@@ -89,7 +86,8 @@ And again any time with:
 /opencode-tunnel list
 ```
 
-> The password is randomly generated each time you create a tunnel. Always check `list` if you forget it.
+> **Note:** On a free ngrok account, the first visit shows an interstitial warning page. Click "Visit Site" to proceed. This only appears once per browser session.
+
 
 ### List Running Tunnels
 
@@ -97,7 +95,7 @@ And again any time with:
 /opencode-tunnel list
 ```
 
-Shows all active tunnels with their IDs, URLs, login credentials, and status.
+Shows all active tunnels with their IDs, URLs, and status.
 
 ### Stop a Tunnel
 
@@ -111,40 +109,63 @@ Shows all active tunnels with their IDs, URLs, login credentials, and status.
 
 The skill:
 
-1. Discovers your OpenCode server (port 3333 or 4096)
-2. Gets your current session info via the OpenCode API
-3. Starts a **headless** OpenCode server (`opencode serve`) with a random password set via `OPENCODE_SERVER_PASSWORD`
-4. Creates a Cloudflare tunnel to expose it publicly
-5. Generates a QR code for easy mobile access
+1. Discovers your running OpenCode server by polling the health endpoint on known ports (3333, 4096), falling back to `lsof` if needed
+2. Fetches current project and session metadata via the OpenCode API
+3. Generates a random 8-digit password for the tunnel
+4. Spawns a detached tunnel process with Basic Auth enabled, pointing it at the local OpenCode port — no second OpenCode instance is started
+5. Polls the tunnel's JSON log until the public URL appears
+6. Saves tunnel metadata (ID, URL, PID, credentials) to `~/.config/opencode/tunnels/tunnels.json`
+7. Displays the public URL, login credentials, and a QR code, then exits — the tunnel runs independently in the background
+
+### Why We Tunnel the Existing Process (Not a New One)
+
+Early versions spawned a separate `opencode serve` process. This caused read-only behavior in the browser because the new process had no knowledge of the TUI session state. Tunneling the running process directly gives full read/write access.
 
 ### URL Format
 
 ```
-https://xxx.trycloudflare.com/{base64(directory)}/session/{session_id}
+https://<tunnel-host>/{base64(directory)}/session/{session_id}
 ```
 
 Example:
 
 - Directory: `/Users/tetsusoh/repos/project`
 - Base64: `L1VzZXJzL3RldHN1c29oL3JlcG9zL3Byb2plY3Q=`
-- Full URL: `https://xxx.trycloudflare.com/L1Vz.../session/ses_xxx`
+- Full URL: `https://<tunnel-host>/L1Vz.../session/ses_xxx`
+
+## Why Not Cloudflare Tunnel?
+
+**Cloudflare Tunnel (`cloudflared`) does not work with OpenCode's streaming responses.**
+
+OpenCode uses [Server-Sent Events (SSE)](https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events) on the `/global/event` endpoint to stream AI responses back to the browser in real time. Cloudflare's tunnel proxies HTTP/2 by default and buffers or drops SSE frames, causing the AI response stream to never arrive in the browser — you see the user message appear but the assistant response never streams back.
+
+ngrok handles SSE correctly by preserving the HTTP/1.1 chunked transfer encoding that SSE relies on.
+
+| Feature                     | cloudflared      | ngrok         |
+| --------------------------- | ---------------- | ------------- |
+| SSE / streaming responses   | ❌ Broken        | ✅ Works      |
+| Free tier                   | ✅ No account    | ✅ Free tier  |
+| Persistent URL              | ❌ Ephemeral     | ❌ Ephemeral  |
+| First-visit interstitial    | ❌ None          | ⚠️ Warning    |
 
 ## Troubleshooting
 
-| Issue                              | Solution                                                   |
-| ---------------------------------- | ---------------------------------------------------------- |
-| "No OpenCode server found"         | Ensure OpenCode TUI or web is running                      |
-| "Failed to start cloudflared"      | Install with `brew install cloudflared`                    |
-| Browser shows login prompt         | Username: `opencode`, Password: shown in `list` output     |
-| Session doesn't open               | Verify session exists and is active                        |
-| Tunnel stopped but process lingers | Run `node tunnel.js stop` — it kills all tracked processes |
+| Issue                           | Solution                                                        |
+| ------------------------------- | --------------------------------------------------------------- |
+| "No OpenCode server found"      | Ensure OpenCode TUI or web is running                           |
+| "Failed to start ngrok"         | Install with `brew install ngrok/ngrok/ngrok`                   |
+| ngrok exits immediately         | Run `ngrok config add-authtoken <token>` first                  |
+| AI responses don't stream back  | This is the cloudflared SSE bug — use ngrok instead             |
+| Browser asks for login      | Username: `opencode`, Password: from `list` output              |
+| Session doesn't open            | Verify session exists and is active                             |
 
 ## Limitations
 
 - **macOS only** — Linux and Windows support planned for a future release
-- Tunnel URL changes on each restart (Cloudflare Quick Tunnels are ephemeral)
+- Tunnel URL changes on each restart (ngrok free tunnels are ephemeral)
 - Only exposes the currently running OpenCode session
 - Local machine must stay online for the tunnel to work
+- ngrok free tier shows an interstitial on first visit per browser session
 
 ## Contributing
 
@@ -161,4 +182,4 @@ MIT License - see [LICENSE](LICENSE) file
 ## Acknowledgments
 
 - Built for [OpenCode](https://opencode.ai)
-- Uses [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/)
+- Uses [ngrok](https://ngrok.com) for tunneling
