@@ -1,34 +1,68 @@
 # OpenCode Tunnel Skill
 
-Expose your OpenCode session to the internet via ngrok for mobile and remote access.
+Expose your OpenCode session to the internet via secure tunnel for mobile and remote access. Supports multiple providers: **ngrok** (public internet) and **Tailscale** (your tailnet).
 
 > **🤖 Fully Agentic:** This project — including all code, documentation, and bug fixes — was written entirely by LLM (Kimi K2.5 & Sonnet 4.6) in ([OpenCode](https://opencode.ai)).
 
 ## Features
 
-- 🌐 **Public URLs** - Access your OpenCode session from any device
+- 🌐 **Public URLs** - Access from any device (ngrok)
+- 🔒 **Private URLs** - Access within your Tailscale network
 - 📱 **QR Codes** - Scan to open on mobile instantly
-- 🚀 **Zero Config** - Tunnels your existing OpenCode session directly
-- 📋 **Manage Multiple Tunnels** - List, track, and stop tunnels easily
+- 🚀 **Zero Config** - Tunnels your existing OpenCode session
+- 🔌 **Pluggable Providers** - Registration pattern for easy extension
+- 📋 **Provider Selection** - Switch between ngrok and tailscale
 
 ## Requirements
 
-| Requirement                             | Notes                                                 |
-| --------------------------------------- | ----------------------------------------------------- |
-| **macOS**                               | Linux and Windows not yet supported                   |
-| **[ngrok](https://ngrok.com/download)** | Tunnel client — `brew install ngrok/ngrok/ngrok`      |
-| **[OpenCode](https://opencode.ai)**     | Must be running (TUI or web) before creating a tunnel |
-| **Node.js**                             | Already available if OpenCode is installed            |
+| Requirement | Notes |
+|-------------|-------|
+| **macOS** | Linux and Windows not yet supported |
+| **ngrok** OR **Tailscale** | At least one tunnel provider installed |
+| **[OpenCode](https://opencode.ai)** | Must be running (TUI or web) |
+| **Node.js** | Already available if OpenCode is installed |
+
+### Provider Comparison
+
+Choose the provider that fits your needs:
+
+| Feature | ngrok | Tailscale |
+|---------|-------|-----------|
+| **Visibility** | Public internet | Your private tailnet only |
+| **URL** | Random on each start | Fixed: `https://your-host.tailnet.ts.net` |
+| **Authentication** | Basic auth (password) | Tailscale SSO |
+| **Browser Warning** | ⚠️ Yes (free tier) | ❌ No |
+| **Account Required** | Optional (free tier) | Yes (free personal plan) |
+
+### Installing Tailscale ⭐ Recommended
+
+Tailscale is the **recommended** provider for secure, private access to your OpenCode session.
+
+```bash
+# Install via Homebrew
+brew install tailscale
+
+# Start the daemon and login to your tailnet
+sudo tailscale up
+
+# Verify you're connected
+tailscale status
+```
+
+Sign up at [tailscale.com](https://tailscale.com) if you don't have an account.
+
+**To access your tunnel from other devices**, they must be connected to your tailnet:  
+[Tailscale Quickstart Guide →](https://tailscale.com/docs/how-to/quickstart)
 
 ### Installing ngrok
+
+Use ngrok for quick public sharing (no account required for basic use).
 
 ```bash
 # Install via Homebrew
 brew install ngrok
 
-# (Optional) Authenticate
-# - Without authtoken: random URL, 1 concurrent tunnel, session expires after a few hours
-# - With authtoken (free account): same random URL, but session is more stable and tied to your account dashboard
+# (Optional) Authenticate for stable URLs
 ngrok config add-authtoken <your-token>
 
 # Verify
@@ -36,7 +70,6 @@ ngrok --version
 ```
 
 Get your auth token at [dashboard.ngrok.com](https://dashboard.ngrok.com).
-
 ## Usage
 
 This is an **OpenCode agent skill**. You interact with it through natural language inside an OpenCode session — no terminal commands needed.
@@ -49,6 +82,23 @@ git clone https://github.com/YOUR_USERNAME/opencode-tunnel \
 ```
 
 OpenCode picks up skills automatically from `~/.config/opencode/skills/`. No restart needed.
+
+### Select a Provider
+
+Check available providers and switch between them:
+
+```bash
+# Show current provider and available options
+node tunnel.js provider
+
+# Switch to ngrok (public internet)
+node tunnel.js provider ngrok
+
+# Switch to tailscale (private tailnet)
+node tunnel.js provider tailscale
+```
+
+The last used provider is saved as the default for future tunnels.
 
 ### Create a Tunnel
 
@@ -64,31 +114,31 @@ Just ask in your OpenCode session:
 The agent will:
 
 1. Discover your running OpenCode server via `lsof`
-2. Create a password-protected ngrok tunnel pointing at it
-3. Display a QR code, public URL, and login credentials
+2. Use your selected provider (or auto-select first available)
+3. Create a tunnel pointing at your OpenCode port
+4. Display a QR code, public URL, and login credentials (if applicable)
+
+### Provider Comparison
+
+| Feature | Tailscale | ngrok | Cloudflare Tunnel |
+|---------|-----------|-------|-------------------|
+| **Visibility** | Your private tailnet | Public internet | Public internet |
+| **Best for** | Team/secure access | Sharing with anyone | - |
+| **URL** | Fixed hostname | Random on each start | Fixed hostname |
+| **Authentication** | Tailscale SSO | Basic auth (password) | Cloudflare Access |
+| **Browser warning** | ❌ No | ⚠️ Yes (free tier) | ❌ No |
+| **Account required** | Yes (free plan) | Optional | Yes |
+| **SSE/Streaming** | ✅ Works | ✅ Works | ❌ **Broken** |
+| **Support Status** | ✅ Supported | ✅ Supported | ❌ Not supported |
+
+> **Note:** Cloudflare Tunnel is not supported because it breaks OpenCode's real-time streaming (SSE). We recommend **ngrok** for public sharing or **Tailscale** for private/team access.
 
 ### Accessing the Tunnel
 
-Every tunnel is protected with Basic Auth enforced by ngrok. When your browser prompts for credentials:
-
-| Field        | Value                                            |
-| ------------ | ------------------------------------------------ |
-| **Username** | `opencode`                                       |
-| **Password** | 8-digit code shown at creation (e.g. `12341234`) |
-
-The credentials are displayed when the tunnel is created:
-
-```
-  Login:        opencode / 12341234  🔐
-```
-
-And again any time with:
-
-```
-/opencode-tunnel list
-```
-
-> **Note:** On a free ngrok account, the first visit shows an interstitial warning page. Click "Visit Site" to proceed. This only appears once per browser session.
+| Provider | Access Method | Instructions |
+|----------|---------------|--------------|
+| **ngrok** | Basic Auth | Username: `opencode`<br>Password: 8-digit code from creation |
+| **Tailscale** | Tailscale SSO | 1. Install Tailscale: https://tailscale.com/download<br>2. Sign in to your tailnet<br>3. Open the URL |
 
 ### List Running Tunnels
 
@@ -96,7 +146,7 @@ And again any time with:
 /opencode-tunnel list
 ```
 
-Shows all active tunnels with their IDs, URLs, and status.
+Shows all active tunnels with their IDs, URLs, provider, and status.
 
 ### Stop a Tunnel
 
@@ -108,15 +158,74 @@ Shows all active tunnels with their IDs, URLs, and status.
 
 ## How It Works
 
-The skill:
+### Architecture Diagram
 
-1. Discovers your running OpenCode server using `lsof` to find the listening process dynamically
-2. Fetches current project and session metadata via the OpenCode API
-3. Generates a random 8-digit password for the tunnel
-4. Spawns a detached tunnel process with Basic Auth enabled, pointing it at the local OpenCode port — no second OpenCode instance is started
-5. Polls the tunnel's JSON log until the public URL appears
-6. Saves tunnel metadata (ID, URL, PID, credentials) to `~/.config/opencode/tunnels/tunnels.json`
-7. Displays the public URL, login credentials, and a QR code, then exits — the tunnel runs independently in the background
+```
+┌────────────────────────────────────────────────────────────────────┐
+│                      YOUR LOCAL MACHINE                            │
+│                                                                    │
+│  ┌──────────────┐      ┌──────────────┐      ┌─────────────────┐  │
+│  │   OpenCode   │◄────►│ Tunnel Skill │◄────►│ Tunnel Provider │  │
+│  │  (Port 3333) │      │ (tunnel.js)  │      │ (ngrok/tailscale)│  │
+│  └──────────────┘      └──────────────┘      └────────┬────────┘  │
+│                                                       │            │
+└───────────────────────────────────────────────────────┼────────────┘
+                                                        │
+                                                        ▼
+                                            ┌─────────────────────┐
+                                            │  TUNNEL SERVICE     │
+                                            │  (Tailscale/ngrok   │
+                                            │   infrastructure)   │
+                                            └──────────┬──────────┘
+                                                       │
+                                                       ▼
+                                            ┌─────────────────────┐
+                                            │   PUBLIC URL        │
+                                            │  https://xxx...     │
+                                            └──────────┬──────────┘
+                                                       │
+                                                       ▼
+                                            ┌─────────────────────┐
+                                            │  REMOTE DEVICES     │
+                                            │  (Phone, Tablet...) │
+                                            └─────────────────────┘
+```
+
+**The flow:**
+1. **OpenCode** runs locally on port 3333
+2. **Tunnel Skill** discovers OpenCode and selects your provider
+3. **Tunnel Provider** (ngrok/tailscale binary) runs locally and connects to their service
+4. **Tunnel Service** creates the public endpoint and assigns a URL
+5. **Remote devices** access your OpenCode via the public URL
+
+### Provider Registration Pattern
+
+### Provider Registration Pattern
+
+The skill uses a **provider registration pattern**:
+
+1. **Provider Interface** - All providers implement a common `TunnelProvider` interface
+2. **Registration** - Providers auto-register themselves on load
+3. **Selection** - User selects default provider (saved to `~/.config/opencode/tunnels/provider.json`)
+4. **Execution** - Selected provider handles tunnel creation/management
+
+### Architecture
+
+```
+tunnel.js
+├── providers/
+│   ├── index.js      # Provider interface & registry
+│   ├── ngrok.js      # NgrokProvider
+│   └── tailscale.js  # TailscaleProvider
+└── ...
+```
+
+Adding a new provider is simple:
+
+1. Create `providers/yours.js`
+2. Extend `TunnelProvider` class
+3. Implement required methods (`isAvailable()`, `startTunnel()`, etc.)
+4. Call `registerProvider('yours', new YourProvider())`
 
 ### Why We Tunnel the Existing Process (Not a New One)
 
@@ -134,44 +243,75 @@ Example:
 - Base64: `L1VzZXJzL3RldHN1c29oL3JlcG9zL3Byb2plY3Q=`
 - Full URL: `https://<tunnel-host>/<base64(directory)>/session/<session_id>`
 
-## Why Not Cloudflare Tunnel?
+## Provider-Specific Notes
 
-**Cloudflare Tunnel (`cloudflared`) does not work with OpenCode's streaming responses.**
+### ngrok Browser Warning Page (Free Tier)
 
-OpenCode uses [Server-Sent Events (SSE)](https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events) on the `/global/event` endpoint to stream AI responses back to the browser in real time. Cloudflare's tunnel proxies HTTP/2 by default and buffers or drops SSE frames, causing the AI response stream to never arrive in the browser — you see the user message appear but the assistant response never streams back.
+When accessing a tunnel on a free ngrok account, the first visit from each browser shows a warning page:
 
-ngrok handles SSE correctly by preserving the HTTP/1.1 chunked transfer encoding that SSE relies on.
+```
+To remove this page:
+    Set and send an ngrok-skip-browser-warning request header with any value.
+    Or, set and send a custom/non-standard browser User-Agent request header.
+    Or, please upgrade to any paid ngrok account.
+```
 
-| Feature                   | cloudflared   | ngrok        |
-| ------------------------- | ------------- | ------------ |
-| SSE / streaming responses | ❌ Broken     | ✅ Works     |
-| Free tier                 | ✅ No account | ✅ Free tier |
-| Persistent URL            | ❌ Ephemeral  | ❌ Ephemeral |
-| First-visit interstitial  | ❌ None       | ⚠️ Warning   |
+**Why this happens:** ngrok free tier shows this interstitial to prevent abuse.
 
+**Workarounds:**
+
+1. **Click "Visit Site"** — The warning only appears once per browser session
+
+2. **Browser extension** — Install a header modifier (like "ModHeader") and add:
+   - Header name: `ngrok-skip-browser-warning`
+   - Header value: `true`
+
+3. **Use mobile** — Many mobile browsers (Safari iOS, Chrome Android) use non-standard User-Agent strings that bypass the warning
+
+4. **Upgrade ngrok** — Paid accounts don't show this page
+
+5. **Use Tailscale instead** — No warning page, but requires Tailscale network membership
+
+### Tailscale Serve
+
+Tailscale tunnels use `tailscale serve` which exposes your service only to your private tailnet (not the public internet). The URL is your machine's Tailscale DNS name:
+
+```
+https://your-machine.tailnet-name.ts.net
+```
+
+**Key differences from ngrok:**
+- **Private only** — Only devices on your tailnet can access the URL
+- **No browser warning** — Unlike ngrok free tier
+- **Fixed URL** — Your hostname stays the same across restarts
+- **Tailscale auth** — Users must be signed into your tailnet (no password needed)
+
+This is ideal for internal team access or when you want to avoid the ngrok warning page. For public internet access, use ngrok instead.
 ## Troubleshooting
 
-| Issue                          | Solution                                            |
-| ------------------------------ | --------------------------------------------------- |
-| "No OpenCode server found"     | Ensure OpenCode TUI or web is running               |
-| "Failed to start ngrok"        | Install with `brew install ngrok/ngrok/ngrok`       |
-| ngrok exits immediately        | Run `ngrok config add-authtoken <token>` first      |
-| AI responses don't stream back | This is the cloudflared SSE bug — use ngrok instead |
-| Browser asks for login         | Username: `opencode`, Password: from `list` output  |
-| Session doesn't open           | Verify session exists and is active                 |
+| Issue | Solution |
+|-------|----------|
+| "No OpenCode server found" | Ensure OpenCode TUI or web is running |
+| "Failed to start ngrok" | Install with `brew install ngrok` |
+| "Failed to start tailscale" | Run `sudo tailscale up` first |
+| ngrok exits immediately | Run `ngrok config add-authtoken <token>` first |
+| Tailscale hostname not found | Ensure `tailscale status` shows connected |
+| AI responses don't stream back | This is the cloudflared SSE bug — use ngrok or tailscale |
+| Browser asks for login | ngrok: username=`opencode`, password=from `list` output. Tailscale: no password needed |
+| Session doesn't open | Verify the session exists and is active |
 
 ## Limitations
 
 - **macOS only** — Linux and Windows support planned
-- Tunnel URL changes on each restart (ngrok free tunnels are ephemeral)
+- **ngrok free tier** — Tunnel URL changes on each restart, shows warning page
+- **Tailscale** — Requires tailnet membership to access
 - Local machine must stay online for the tunnel to work
-- ngrok free tier may show an interstitial on first visit per browser session
 
 ## Planned / Future Work
 
 - **Linux & Windows support**
-- **Tailscale support** — expose the session over a private Tailscale network instead of the public internet
-- **Additional tunnel providers** — pluggable backend beyond ngrok
+- **Additional tunnel providers** — Cloudflare (if SSE issues resolved), LocalTunnel, etc.
+- **Provider configuration** — Per-provider settings (ports, auth, etc.)
 
 ## Contributing
 
@@ -188,4 +328,4 @@ MIT License - see [LICENSE](LICENSE) file
 ## Acknowledgments
 
 - Built for [OpenCode](https://opencode.ai)
-- Uses [ngrok](https://ngrok.com) for tunneling
+- Supports [ngrok](https://ngrok.com) and [Tailscale](https://tailscale.com) tunneling

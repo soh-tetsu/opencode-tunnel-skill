@@ -4,29 +4,40 @@
  * OpenCode Tunnel Skill
  *
  * Exposes a specific OpenCode session to the public internet via a tunnel.
+ * Supports multiple providers: ngrok, tailscale
  *
  * Usage:
  *   node tunnel.js                    - Create a new tunnel (interactive)
  *   node tunnel.js create             - Create a new tunnel
+ *   node tunnel.js provider           - Show current provider
+ *   node tunnel.js provider ngrok     - Switch to ngrok provider
+ *   node tunnel.js provider tailscale - Switch to tailscale provider
  *   node tunnel.js list               - List all running tunnels
  *   node tunnel.js stop [tunnel-id]   - Stop a tunnel (or all if no id provided)
  */
 
-const { execSync, spawn } = require("node:child_process");
+const { execSync } = require("node:child_process");
 const http = require("node:http");
 const QRCode = require("qrcode");
 const fs = require("node:fs");
 const path = require("node:path");
 const os = require("node:os");
 
+// Load providers (this registers them)
+require("./providers/ngrok");
+require("./providers/tailscale");
+const {
+	getDefaultProvider,
+	setDefaultProvider,
+	getAllProviders,
+	getAvailableProviders,
+	loadProviderPreference,
+} = require("./providers");
+
 // Platform check - macOS only for now
 if (process.platform !== "darwin") {
-	console.error(
-		`[opencode-tunnel] ERROR: This skill currently only supports macOS.`,
-	);
-	console.error(
-		`[opencode-tunnel]        Detected platform: ${process.platform}`,
-	);
+	console.error(`[opencode-tunnel] ERROR: This skill currently only supports macOS.`);
+	console.error(`[opencode-tunnel]        Detected platform: ${process.platform}`);
 	console.error(
 		`[opencode-tunnel]        Linux and Windows support is planned for a future release.`,
 	);
@@ -86,31 +97,48 @@ function isProcessRunning(pid) {
 }
 
 // Cleanup dead tunnels
-function cleanupDeadTunnels() {
+async function cleanupDeadTunnels() {
 	const tunnels = loadTunnels();
 	let modified = false;
 
 	for (const [id, tunnel] of Object.entries(tunnels)) {
-		const tunnelRunning = isProcessRunning(tunnel.tunnelPid);
-		// opencodePid may be null if tunneling an existing process
-		const opencodeRunning = tunnel.opencodePid
-			? isProcessRunning(tunnel.opencodePid)
-			: true;
+		// Provider-specific tunnel checking
+		let tunnelRunning = false;
+		if (tunnel.provider === "tailscale") {
+			// For tailscale, check serve status instead of process
+			const { provider } = getDefaultProvider() || {};
+			if (provider) {
+				const health = await provider.checkHealth(tunnel.tunnelUrl);
+				tunnelRunning = health.healthy;
+			}
+		} else {
+			// For ngrok and others, check process
+			tunnelRunning = isProcessRunning(tunnel.tunnelPid);
+		}
+
+		const opencodeRunning = tunnel.opencodePid ? isProcessRunning(tunnel.opencodePid) : true;
 
 		if (!tunnelRunning && !opencodeRunning) {
 			delete tunnels[id];
 			modified = true;
 		} else if (!tunnelRunning) {
-			// Tunnel died - kill managed opencode if we own it
-			try {
-				if (tunnel.opencodePid) process.kill(tunnel.opencodePid, "SIGTERM");
-			} catch (_e) {}
+			// Tunnel died but opencode still running - clean up
+			if (tunnel.provider === "tailscale") {
+				// For tailscale, reset serve config
+				try {
+					execSync("tailscale serve reset", { stdio: "ignore" });
+				} catch (_e) {}
+			}
 			delete tunnels[id];
 			modified = true;
 		} else if (tunnel.opencodePid && !opencodeRunning) {
-			// Our opencode died but tunnel still up - kill tunnel too
+			// Our opencode died - stop tunnel too
 			try {
-				process.kill(tunnel.tunnelPid, "SIGTERM");
+				if (tunnel.provider === "tailscale") {
+					execSync("tailscale serve reset", { stdio: "ignore" });
+				} else {
+					process.kill(tunnel.tunnelPid, "SIGTERM");
+				}
 			} catch (_e) {}
 			delete tunnels[id];
 			modified = true;
@@ -124,47 +152,14 @@ function cleanupDeadTunnels() {
 	return tunnels;
 }
 
-// Check ngrok tunnel health via API
-async function checkNgrokHealth(tunnelUrl) {
-  return new Promise((resolve) => {
-    const req = http.get('http://localhost:4040/api/tunnels', (res) => {
-      let data = '';
-      res.on('data', (chunk) => (data += chunk));
-      res.on('end', () => {
-        try {
-          const response = JSON.parse(data);
-          if (response.tunnels && response.tunnels.length > 0) {
-            // Find tunnel matching our URL
-            const matchingTunnel = response.tunnels.find(t => 
-              tunnelUrl && tunnelUrl.includes(t.public_url)
-            );
-            if (matchingTunnel) {
-              resolve({ healthy: true, state: matchingTunnel.state || 'active' });
-            } else {
-              resolve({ healthy: false, state: 'not_found', error: 'Tunnel not found in ngrok' });
-            }
-          } else {
-            resolve({ healthy: false, state: 'no_tunnels', error: 'No active tunnels in ngrok' });
-          }
-        } catch (e) {
-          resolve({ healthy: false, state: 'error', error: 'Failed to parse ngrok API response' });
-        }
-      });
-    });
-    req.on('error', () => {
-      resolve({ healthy: false, state: 'unreachable', error: 'Cannot connect to ngrok API (is ngrok running?)' });
-    });
-    req.setTimeout(3000, () => {
-      req.destroy();
-      resolve({ healthy: false, state: 'timeout', error: 'ngrok API timeout' });
-    });
-  });
+// Check tunnel health via provider
+async function checkTunnelHealth(provider, tunnelUrl) {
+	return provider.checkHealth(tunnelUrl);
 }
-
 
 // List all tunnels
 async function listTunnels() {
-	const tunnels = cleanupDeadTunnels();
+	const tunnels = await cleanupDeadTunnels();
 	const tunnelEntries = Object.entries(tunnels);
 
 	if (tunnelEntries.length === 0) {
@@ -177,57 +172,58 @@ async function listTunnels() {
 	console.log("  🌐 ACTIVE TUNNELS");
 	console.log("═".repeat(70));
 
-	const sortedEntries = tunnelEntries.sort(
-		([, a], [, b]) => a.createdAt - b.createdAt,
-	);
+	const sortedEntries = tunnelEntries.sort(([, a], [, b]) => a.createdAt - b.createdAt);
+
 	for (const [id, tunnel] of sortedEntries) {
-  const tunnelOk = isProcessRunning(tunnel.tunnelPid);
-  const opencodeOk = tunnel.opencodePid
-    ? isProcessRunning(tunnel.opencodePid)
-    : true;
-  const createdLabel = new Date(tunnel.createdAt)
-    .toISOString()
-    .replace("T", " ")
-    .slice(0, 19);
+		// Provider-specific tunnel status check
+		let tunnelOk = false;
+		if (tunnel.provider === "tailscale") {
+			const { provider } = getDefaultProvider() || {};
+			if (provider) {
+				const health = await provider.checkHealth(tunnel.tunnelUrl);
+				tunnelOk = health.healthy;
+			}
+		} else {
+			tunnelOk = isProcessRunning(tunnel.tunnelPid);
+		}
 
-  // Check ngrok health via API (only if process is running)
-  let healthStatus = null;
-  if (tunnelOk) {
-    healthStatus = await checkNgrokHealth(tunnel.tunnelUrl || tunnel.url);
-  }
+		const opencodeOk = tunnel.opencodePid ? isProcessRunning(tunnel.opencodePid) : true;
+		const createdLabel = new Date(tunnel.createdAt).toISOString().replace("T", " ").slice(0, 19);
 
-  // Build status display
-  let processStatus, tunnelHealth;
-  if (tunnelOk && opencodeOk) {
-    processStatus = "🟢";
-  } else {
-    processStatus = "🔴";
-  }
+		// Get provider for health check
+		const { provider } = getDefaultProvider() || {};
+		let healthStatus = null;
+		if (tunnelOk && provider) {
+			healthStatus = await checkTunnelHealth(provider, tunnel.tunnelUrl);
+		}
 
-  if (!tunnelOk) {
-    tunnelHealth = "dead";
-  } else if (!healthStatus) {
-    tunnelHealth = "unknown";
-  } else if (healthStatus.healthy) {
-    tunnelHealth = healthStatus.state; // 'active'
-  } else {
-    tunnelHealth = healthStatus.state; // error state
-  }
+		const processStatus = tunnelOk && opencodeOk ? "🟢" : "🔴";
+		const tunnelHealth = !tunnelOk
+			? "dead"
+			: !healthStatus
+				? "unknown"
+				: healthStatus.healthy
+					? healthStatus.state
+					: healthStatus.state;
 
-  const status = `${processStatus} ${tunnelHealth.toUpperCase()}`;
-  const healthDetail = healthStatus && !healthStatus.healthy ? ` (${healthStatus.error})` : "";
+		const status = `${processStatus} ${tunnelHealth.toUpperCase()}`;
+		const healthDetail = healthStatus && !healthStatus.healthy ? ` (${healthStatus.error})` : "";
 
-  console.log(`\n  Tunnel ID:    ${id}  (created ${createdLabel})`);
-  console.log(`  Status:       ${status}${healthDetail}`);
-  console.log(`  URL:          ${tunnel.url}`);
-  console.log(
-    `  Login:        ${tunnel.password ? `opencode / ${tunnel.password}  🔐` : "(no auth - existing opencode)"}`,
-  );
-  console.log(`  Session:      ${tunnel.sessionTitle}`);
-  console.log(`  Project:      ${tunnel.projectPath}`);
-  console.log(`  Local Port:   ${tunnel.localPort}`);
-  console.log("─".repeat(70));
-}
+		console.log(`\n  Tunnel ID:    ${id}  (created ${createdLabel})`);
+		console.log(`  Status:       ${status}${healthDetail}`);
+		console.log(`  URL:          ${tunnel.url}`);
+		if (tunnel.provider === "tailscale") {
+			console.log(`  Auth:         Tailscale SSO - Install Tailscale on your device to access`);
+			console.log(`  How to:       https://tailscale.com/download`);
+		} else {
+			console.log(`  Login:        opencode / ${tunnel.password}  🔐`);
+		}
+		console.log(`  Provider:     ${tunnel.provider || "ngrok"}`);
+		console.log(`  Session:      ${tunnel.sessionTitle}`);
+		console.log(`  Project:      ${tunnel.projectPath}`);
+		console.log(`  Local Port:   ${tunnel.localPort}`);
+		console.log("─".repeat(70));
+	}
 
 	console.log("\n  Commands:");
 	console.log("    node tunnel.js stop [tunnel-id]  - Stop a specific tunnel");
@@ -239,7 +235,6 @@ async function stopTunnel(tunnelId) {
 	const tunnels = loadTunnels();
 
 	if (tunnelId) {
-		// Stop specific tunnel
 		const tunnel = tunnels[tunnelId];
 		if (!tunnel) {
 			error(`Tunnel ${tunnelId} not found`);
@@ -248,12 +243,20 @@ async function stopTunnel(tunnelId) {
 
 		console.log(`\n  Stopping tunnel ${tunnelId}...`);
 
-		try {
-			if (isProcessRunning(tunnel.tunnelPid)) {
-				process.kill(tunnel.tunnelPid, "SIGTERM");
-				log(`Killed tunnel process (PID: ${tunnel.tunnelPid})`);
-			}
-		} catch (_e) {}
+		// Get provider to stop tunnel properly
+		const { provider } = getDefaultProvider() || {};
+		if (provider) {
+			await provider.stopTunnel(tunnel.tunnelPid);
+			log(`Stopped via ${provider.name} provider`);
+		} else {
+			// Fallback: just kill the process
+			try {
+				if (isProcessRunning(tunnel.tunnelPid)) {
+					process.kill(tunnel.tunnelPid, "SIGTERM");
+					log(`Killed tunnel process (PID: ${tunnel.tunnelPid})`);
+				}
+			} catch (_e) {}
+		}
 
 		try {
 			if (isProcessRunning(tunnel.opencodePid)) {
@@ -267,7 +270,6 @@ async function stopTunnel(tunnelId) {
 
 		console.log("  ✅ Tunnel stopped successfully\n");
 	} else {
-		// Stop all tunnels
 		const tunnelIds = Object.keys(tunnels);
 
 		if (tunnelIds.length === 0) {
@@ -277,15 +279,21 @@ async function stopTunnel(tunnelId) {
 
 		console.log(`\n  Stopping ${tunnelIds.length} tunnel(s)...\n`);
 
+		const { provider } = getDefaultProvider() || {};
+
 		for (const id of tunnelIds) {
 			const tunnel = tunnels[id];
 			console.log(`  Stopping ${id}...`);
 
-			try {
-				if (isProcessRunning(tunnel.tunnelPid)) {
-					process.kill(tunnel.tunnelPid, "SIGTERM");
-				}
-			} catch (_e) {}
+			if (provider) {
+				await provider.stopTunnel(tunnel.tunnelPid);
+			} else {
+				try {
+					if (isProcessRunning(tunnel.tunnelPid)) {
+						process.kill(tunnel.tunnelPid, "SIGTERM");
+					}
+				} catch (_e) {}
+			}
 
 			try {
 				if (isProcessRunning(tunnel.opencodePid)) {
@@ -306,10 +314,10 @@ async function discoverPort() {
 	log("Discovering OpenCode server...");
 
 	try {
-		const out = execSync(
-			'lsof -i -P 2>/dev/null | grep -E ".opencode|opencode" | grep LISTEN',
-			{ encoding: "utf8", timeout: 5000 },
-		);
+		const out = execSync('lsof -i -P 2>/dev/null | grep -E ".opencode|opencode" | grep LISTEN', {
+			encoding: "utf8",
+			timeout: 5000,
+		});
 		const m = out.match(/:(\d+)\s*\(LISTEN\)/);
 		if (m) {
 			log(`Found OpenCode on port ${m[1]}`);
@@ -395,92 +403,11 @@ function buildWebUrl(sessionDir, sessionId) {
 	return `/${base64Dir}/session/${sessionId}`;
 }
 
-// Start tunnel - uses ngrok API to get URL quickly
-// Returns { url, pid } after getting URL from ngrok API
-function startTunnel(port, password) {
-	return new Promise((resolve, reject) => {
-		log("Starting tunnel...");
-
-		// Ensure log directory exists
-		if (!fs.existsSync(LOG_DIR)) {
-			fs.mkdirSync(LOG_DIR, { recursive: true });
-		}
-		const logFile = path.join(LOG_DIR, `ngrok-${Date.now()}.log`);
-		log(`Logging to: ${logFile}`);
-
-		// Spawn ngrok with logging enabled
-		const tunnelProc = spawn(
-			"ngrok",
-			[
-				"http",
-				String(port),
-				"--basic-auth",
-				`opencode:${password}`,
-				"--request-header-add",
-				"ngrok-skip-browser-warning:true",
-				"--log", logFile,
-				"--log-format", "json",
-			],
-			{
-				stdio: "ignore",
-				detached: true,
-			},
-		);
-		tunnelProc.on("error", (err) => reject(err));
-		tunnelProc.unref();
-
-		const pid = tunnelProc.pid;
-		let attempts = 0;
-		const maxAttempts = 60; // 60 * 100ms = 6 seconds max
-
-		// Poll ngrok API for tunnel URL (much faster than log parsing)
-		const timer = setInterval(() => {
-			attempts++;
-
-			http
-				.get("http://localhost:4040/api/tunnels", (res) => {
-					let data = "";
-					res.on("data", (chunk) => (data += chunk));
-					res.on("end", () => {
-						try {
-							const response = JSON.parse(data);
-							if (response.tunnels && response.tunnels.length > 0) {
-								const tunnel = response.tunnels[0];
-								if (tunnel.public_url) {
-									clearInterval(timer);
-									log(`Tunnel ready: ${tunnel.public_url} (PID: ${pid})`);
-									resolve({ url: tunnel.public_url, pid });
-									return;
-								}
-							}
-						} catch (_e) {
-							// API not ready yet, continue polling
-						}
-					});
-				})
-				.on("error", () => {
-					// API endpoint not ready yet, continue polling
-				});
-
-			if (attempts >= maxAttempts) {
-				clearInterval(timer);
-				try {
-					process.kill(pid, "SIGTERM");
-				} catch (_e) {}
-				reject(new Error("Timeout: ngrok API did not respond with tunnel URL"));
-			}
-		}, 100); // Poll every 100ms
-	});
-}
-
 // Generate QR as image file
 function generateQRImage(url, filePath) {
 	return new Promise((resolve, reject) => {
-		QRCode.toFile(
-			filePath,
-			url,
-			{ type: "png", width: 400, margin: 2 },
-			(err) => (err ? reject(err) : resolve()),
+		QRCode.toFile(filePath, url, { type: "png", width: 400, margin: 2 }, (err) =>
+			err ? reject(err) : resolve(),
 		);
 	});
 }
@@ -494,12 +421,96 @@ function generateQRTerminal(url) {
 	});
 }
 
+// Provider management
+async function showProvider() {
+	const current = loadProviderPreference();
+	const _available = getAvailableProviders();
+
+	console.log(`\n${"═".repeat(60)}`);
+	console.log("  🔌 TUNNEL PROVIDERS");
+	console.log("═".repeat(60));
+
+	console.log("\n  Available providers:");
+	for (const [name, provider] of getAllProviders()) {
+		const info = provider.getInfo();
+		const marker = name === current ? "👉" : "  ";
+		const status = info.available ? "✅" : "❌";
+		console.log(`    ${marker} ${name.padEnd(12)} ${status} ${info.version}`);
+	}
+
+	console.log("\n  Current default:");
+	if (current) {
+		console.log(`    ${current}`);
+	} else {
+		console.log("    (none - will auto-select first available)");
+	}
+
+	console.log("\n  Commands:");
+	console.log("    node tunnel.js provider ngrok     - Use ngrok");
+	console.log("    node tunnel.js provider tailscale - Use tailscale");
+	console.log("═".repeat(60));
+	console.log();
+}
+
+async function setProvider(providerName) {
+	const allProviders = getAllProviders();
+
+	if (!allProviders.has(providerName)) {
+		error(`Unknown provider: ${providerName}`);
+		console.log("\n  Available providers:");
+		for (const [name] of allProviders) {
+			console.log(`    - ${name}`);
+		}
+		console.log();
+		process.exit(1);
+	}
+
+	const provider = allProviders.get(providerName);
+	if (!provider.isAvailable()) {
+		error(`${providerName} is not installed or not available`);
+		console.log(`\n  Install ${providerName} first:`);
+		if (providerName === "ngrok") {
+			console.log("    brew install ngrok");
+		} else if (providerName === "tailscale") {
+			console.log("    brew install tailscale");
+		}
+		console.log();
+		process.exit(1);
+	}
+
+	if (setDefaultProvider(providerName)) {
+		console.log(`\n  ✅ Default provider set to: ${providerName}\n`);
+	} else {
+		error(`Failed to set provider: ${providerName}`);
+		process.exit(1);
+	}
+}
+
 // Create new tunnel
 async function createTunnel() {
 	console.log(`\n${"=".repeat(60)}`);
 	console.log("  🚀 OpenCode Tunnel Skill");
 	console.log("  Expose your session to the internet via tunnel");
 	console.log(`${"=".repeat(60)}\n`);
+
+	// Get provider
+	let providerResult = getDefaultProvider();
+	if (!providerResult) {
+		const available = getAvailableProviders();
+		if (available.length === 0) {
+			error("No tunnel providers available");
+			console.log("\n  Please install one of:");
+			console.log("    - ngrok: brew install ngrok");
+			console.log("    - tailscale: brew install tailscale");
+			console.log();
+			process.exit(1);
+		}
+		// Auto-select first available
+		providerResult = available[0];
+	}
+
+	const { name: providerName, provider } = providerResult;
+	log(`Using provider: ${providerName}`);
 
 	try {
 		const port = await discoverPort();
@@ -524,16 +535,13 @@ async function createTunnel() {
 		const sessionDir = session.directory || pathInfo.directory;
 		log(`Session directory: ${sessionDir}`);
 
-		// Tunnel the existing opencode port directly - no separate process needed
-		// This allows full read/write access (not read-only) from the browser
 		log(`Tunneling existing opencode on port ${port}...`);
 
 		const tunnelId = generateTunnelId();
 		const password = generatePassword();
-		const { url: tunnelUrl, pid: tunnelPid } = await startTunnel(
-			port,
-			password,
-		);
+
+		// Start tunnel via provider
+		const { url: tunnelUrl, pid: tunnelPid } = await provider.startTunnel(port, password);
 
 		const urlPath = buildWebUrl(sessionDir, sessionId);
 		const fullUrl = tunnelUrl + urlPath;
@@ -542,21 +550,22 @@ async function createTunnel() {
 		// Generate QR code
 		await generateQRImage(fullUrl, qrPath);
 
-		// Save tunnel metadata (no opencodePid - using existing process)
+		// Save tunnel metadata
 		const tunnels = loadTunnels();
 		tunnels[tunnelId] = {
 			id: tunnelId,
 			url: fullUrl,
 			tunnelUrl: tunnelUrl,
 			localPort: port,
-			opencodePid: null, // existing opencode - not managed by us
+			opencodePid: null,
 			tunnelPid: tunnelPid,
 			sessionId: sessionId,
 			sessionTitle: sessionTitle,
 			projectId: projectId,
 			projectPath: sessionDir,
 			qrPath: qrPath,
-			password: password,
+			password: providerName === "ngrok" ? password : null,
+			provider: providerName,
 			createdAt: Date.now(),
 		};
 		saveTunnels(tunnels);
@@ -573,10 +582,18 @@ async function createTunnel() {
 		console.log(`\n${"─".repeat(60)}`);
 		console.log("  🌐 TUNNEL READY");
 		console.log("─".repeat(60));
-		console.log(`\n  Tunnel ID:    ${tunnelId}`);
+		console.log(`\n  Provider:     ${providerName}`);
+		console.log(`  Tunnel ID:    ${tunnelId}`);
 		console.log(`  URL:          ${fullUrl}`);
-		console.log(`  Login:        opencode / ${password}  🔐`);
-		console.log(`  Session:      ${sessionTitle}`);
+		if (providerName === "ngrok") {
+			console.log(`  Login:        opencode / ${password}  🔐`);
+		} else {
+			console.log(`  Auth:         Tailscale SSO (no password needed)`);
+			console.log(
+				`  Setup:        Install Tailscale on your device → https://tailscale.com/download`,
+			);
+			console.log(`                Then sign in to your tailnet to access this URL`);
+		}
 		console.log(`  Session ID:   ${sessionId}`);
 		console.log(`\n${"=".repeat(60)}`);
 		console.log("  📱 SCAN THIS QR CODE WITH YOUR PHONE CAMERA");
@@ -591,9 +608,7 @@ async function createTunnel() {
 		console.log("=".repeat(60));
 
 		console.log("\n  ✅ Tunnel is running in background");
-		console.log(
-			`     Tunneling existing opencode on port ${port} (tunnel PID: ${tunnelPid})`,
-		);
+		console.log(`     Tunneling existing opencode on port ${port} (tunnel PID: ${tunnelPid})`);
 		console.log("\n  Commands:");
 		console.log("     node tunnel.js list              - List all tunnels");
 		console.log(`     node tunnel.js stop ${tunnelId}  - Stop this tunnel\n`);
@@ -603,8 +618,6 @@ async function createTunnel() {
 			execSync(`open "${qrPath}"`);
 		} catch (_e) {}
 
-		// Both child processes are fully detached (unref'd) before this point.
-		// process.exit(0) is safe - it won't kill detached children.
 		process.exit(0);
 	} catch (err) {
 		error(err.message);
@@ -632,6 +645,16 @@ async function main() {
 			await createTunnel();
 			break;
 
+		case "provider": {
+			const providerName = process.argv[3];
+			if (providerName) {
+				await setProvider(providerName);
+			} else {
+				await showProvider();
+			}
+			break;
+		}
+
 		case "help":
 		case "--help":
 		case "-h":
@@ -641,6 +664,9 @@ async function main() {
   Usage:
     node tunnel.js                    Create a new tunnel (interactive)
     node tunnel.js create             Create a new tunnel
+    node tunnel.js provider           Show current provider
+    node tunnel.js provider ngrok     Switch to ngrok provider
+    node tunnel.js provider tailscale Switch to tailscale provider
     node tunnel.js list               List all running tunnels  
     node tunnel.js stop [tunnel-id]   Stop a tunnel (or all if no id)
     node tunnel.js help               Show this help
@@ -648,6 +674,7 @@ async function main() {
   Examples:
     node tunnel.js create
     node tunnel.js list
+    node tunnel.js provider tailscale
     node tunnel.js stop tun_1234567890_abc123
     node tunnel.js stop               Stop all tunnels
     `);
