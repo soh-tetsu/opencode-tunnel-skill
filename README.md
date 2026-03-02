@@ -132,7 +132,7 @@ Example:
 
 - Directory: `/Users/tetsusoh/repos/project`
 - Base64: `L1VzZXJzL3RldHN1c29oL3JlcG9zL3Byb2plY3Q=`
-- Full URL: `https://<tunnel-host>/L1Vz.../session/ses_xxx`
+- Full URL: `https://<tunnel-host>/<base64(directory)>/session/<session_id>`
 
 ## Why Not Cloudflare Tunnel?
 

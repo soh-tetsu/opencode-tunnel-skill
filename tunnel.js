@@ -36,6 +36,7 @@ if (process.platform !== "darwin") {
 // Paths
 const TUNNEL_DIR = path.join(os.homedir(), ".config", "opencode", "tunnels");
 const TUNNEL_METADATA_FILE = path.join(TUNNEL_DIR, "tunnels.json");
+const LOG_DIR = "/tmp/opencode-tunnel";
 
 // Ensure tunnel directory exists
 if (!fs.existsSync(TUNNEL_DIR)) {
@@ -123,6 +124,44 @@ function cleanupDeadTunnels() {
 	return tunnels;
 }
 
+// Check ngrok tunnel health via API
+async function checkNgrokHealth(tunnelUrl) {
+  return new Promise((resolve) => {
+    const req = http.get('http://localhost:4040/api/tunnels', (res) => {
+      let data = '';
+      res.on('data', (chunk) => (data += chunk));
+      res.on('end', () => {
+        try {
+          const response = JSON.parse(data);
+          if (response.tunnels && response.tunnels.length > 0) {
+            // Find tunnel matching our URL
+            const matchingTunnel = response.tunnels.find(t => 
+              tunnelUrl && tunnelUrl.includes(t.public_url)
+            );
+            if (matchingTunnel) {
+              resolve({ healthy: true, state: matchingTunnel.state || 'active' });
+            } else {
+              resolve({ healthy: false, state: 'not_found', error: 'Tunnel not found in ngrok' });
+            }
+          } else {
+            resolve({ healthy: false, state: 'no_tunnels', error: 'No active tunnels in ngrok' });
+          }
+        } catch (e) {
+          resolve({ healthy: false, state: 'error', error: 'Failed to parse ngrok API response' });
+        }
+      });
+    });
+    req.on('error', () => {
+      resolve({ healthy: false, state: 'unreachable', error: 'Cannot connect to ngrok API (is ngrok running?)' });
+    });
+    req.setTimeout(3000, () => {
+      req.destroy();
+      resolve({ healthy: false, state: 'timeout', error: 'ngrok API timeout' });
+    });
+  });
+}
+
+
 // List all tunnels
 async function listTunnels() {
 	const tunnels = cleanupDeadTunnels();
@@ -142,26 +181,53 @@ async function listTunnels() {
 		([, a], [, b]) => a.createdAt - b.createdAt,
 	);
 	for (const [id, tunnel] of sortedEntries) {
-		const tunnelOk = isProcessRunning(tunnel.tunnelPid);
-		const opencodeOk = tunnel.opencodePid
-			? isProcessRunning(tunnel.opencodePid)
-			: true;
-		const status = tunnelOk && opencodeOk ? "🟢 RUNNING" : "🔴 DEAD";
-		const createdLabel = new Date(tunnel.createdAt)
-			.toISOString()
-			.replace("T", " ")
-			.slice(0, 19);
-		console.log(`\n  Tunnel ID:    ${id}  (created ${createdLabel})`);
-		console.log(`  Status:       ${status}`);
-		console.log(`  URL:          ${tunnel.url}`);
-		console.log(
-			`  Login:        ${tunnel.password ? `opencode / ${tunnel.password}  🔐` : "(no auth - existing opencode)"}`,
-		);
-		console.log(`  Session:      ${tunnel.sessionTitle}`);
-		console.log(`  Project:      ${tunnel.projectPath}`);
-		console.log(`  Local Port:   ${tunnel.localPort}`);
-		console.log("─".repeat(70));
-	}
+  const tunnelOk = isProcessRunning(tunnel.tunnelPid);
+  const opencodeOk = tunnel.opencodePid
+    ? isProcessRunning(tunnel.opencodePid)
+    : true;
+  const createdLabel = new Date(tunnel.createdAt)
+    .toISOString()
+    .replace("T", " ")
+    .slice(0, 19);
+
+  // Check ngrok health via API (only if process is running)
+  let healthStatus = null;
+  if (tunnelOk) {
+    healthStatus = await checkNgrokHealth(tunnel.tunnelUrl || tunnel.url);
+  }
+
+  // Build status display
+  let processStatus, tunnelHealth;
+  if (tunnelOk && opencodeOk) {
+    processStatus = "🟢";
+  } else {
+    processStatus = "🔴";
+  }
+
+  if (!tunnelOk) {
+    tunnelHealth = "dead";
+  } else if (!healthStatus) {
+    tunnelHealth = "unknown";
+  } else if (healthStatus.healthy) {
+    tunnelHealth = healthStatus.state; // 'active'
+  } else {
+    tunnelHealth = healthStatus.state; // error state
+  }
+
+  const status = `${processStatus} ${tunnelHealth.toUpperCase()}`;
+  const healthDetail = healthStatus && !healthStatus.healthy ? ` (${healthStatus.error})` : "";
+
+  console.log(`\n  Tunnel ID:    ${id}  (created ${createdLabel})`);
+  console.log(`  Status:       ${status}${healthDetail}`);
+  console.log(`  URL:          ${tunnel.url}`);
+  console.log(
+    `  Login:        ${tunnel.password ? `opencode / ${tunnel.password}  🔐` : "(no auth - existing opencode)"}`,
+  );
+  console.log(`  Session:      ${tunnel.sessionTitle}`);
+  console.log(`  Project:      ${tunnel.projectPath}`);
+  console.log(`  Local Port:   ${tunnel.localPort}`);
+  console.log("─".repeat(70));
+}
 
 	console.log("\n  Commands:");
 	console.log("    node tunnel.js stop [tunnel-id]  - Stop a specific tunnel");
@@ -335,7 +401,14 @@ function startTunnel(port, password) {
 	return new Promise((resolve, reject) => {
 		log("Starting tunnel...");
 
-		// Spawn ngrok without log file - we'll use the API instead
+		// Ensure log directory exists
+		if (!fs.existsSync(LOG_DIR)) {
+			fs.mkdirSync(LOG_DIR, { recursive: true });
+		}
+		const logFile = path.join(LOG_DIR, `ngrok-${Date.now()}.log`);
+		log(`Logging to: ${logFile}`);
+
+		// Spawn ngrok with logging enabled
 		const tunnelProc = spawn(
 			"ngrok",
 			[
@@ -345,6 +418,8 @@ function startTunnel(port, password) {
 				`opencode:${password}`,
 				"--request-header-add",
 				"ngrok-skip-browser-warning:true",
+				"--log", logFile,
+				"--log-format", "json",
 			],
 			{
 				stdio: "ignore",
@@ -462,7 +537,7 @@ async function createTunnel() {
 
 		const urlPath = buildWebUrl(sessionDir, sessionId);
 		const fullUrl = tunnelUrl + urlPath;
-		const qrPath = path.join("/tmp", `${tunnelId}.png`);
+		const qrPath = path.join(LOG_DIR, `${tunnelId}.png`);
 
 		// Generate QR code
 		await generateQRImage(fullUrl, qrPath);

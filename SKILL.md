@@ -36,7 +36,11 @@ Create a new tunnel? [Y/n]:
 ```
 
 Press `Enter` or type `y`/`yes` to proceed with creating a tunnel. Type `n`/`no` to cancel.
+Press `Enter` or type `y`/`yes` to proceed with creating a tunnel. Type `n`/`no` to cancel.
 
+## Output Format
+
+When displaying tunnel URLs, always print the **complete full URL** without truncation or collapsing. Never use `...` to shorten URLs - show the entire URL from `https://` to the end, including the full base64-encoded directory path and session ID.
 ## Commands
 
 ```bash
@@ -104,7 +108,7 @@ The OpenCode web UI uses this URL format:
 Example:
 - Directory: `/Users/tetsusoh/repos/project`
 - Base64: `L1VzZXJzL3RldHN1c29oL3JlcG9zL3Byb2plY3Q=`
-- Full URL: `https://xxx.ngrok-free.dev/L1Vz.../session/ses_xxx`
+- Full URL: `https://xxx.ngrok-free.dev/<base64(directory)>/session/<session_id>`
 
 ## Troubleshooting
 
