@@ -1,13 +1,13 @@
 ---
 name: opencode-tunnel
-description: Expose OpenCode sessions to the internet via Cloudflare Tunnel for mobile and remote access
+description: Expose OpenCode sessions to the internet via ngrok tunnel for mobile and remote access
 ---
 
 ## What I Do
 
 When the user wants to expose their OpenCode session to the internet, I will:
 
-1. **Check prerequisites** - Verify cloudflared is installed (`which cloudflared`)
+1. **Check prerequisites** - Verify ngrok is installed (`which ngrok`)
 2. **Discover OpenCode** - Find the running OpenCode server port (3333 or 4096)
 3. **Get session info** - Fetch current session details and project directory via OpenCode API
 4. **Execute tunnel** - Run the tunnel script: `node ~/.config/opencode/skills/opencode-tunnel/tunnel.js`
@@ -21,7 +21,7 @@ Trigger this skill when the user says:
 - "Create tunnel for my session"
 - "Access my session from mobile"
 - "Share my opencode session"
-- "/tunnel" or "/opencode-tunnel" (with or without additional text)
+- `/opencode-tunnel` (with or without additional text)
 - "Make my session public"
 - "Remote access to my session"
 - "List running tunnels"
@@ -29,11 +29,13 @@ Trigger this skill when the user says:
 - "Show tunnel status"
 ## Default Behavior
 
-If the user invokes this skill with an empty request (e.g., just `/tunnel` with no additional words), **treat the request as**: "expose my current session via tunnel"
+If the user invokes this skill with an empty request (e.g., just `/opencode-tunnel` with no additional words), the skill will enter **interactive mode** and prompt:
 
-Proceed with the standard tunnel creation workflow as if the user explicitly requested to expose their current session.
+```
+Create a new tunnel? [Y/n]:
+```
 
-
+Press `Enter` or type `y`/`yes` to proceed with creating a tunnel. Type `n`/`no` to cancel.
 
 ## Commands
 
@@ -63,9 +65,9 @@ node ~/.config/opencode/skills/opencode-tunnel/tunnel.js help
 
 The skill requires these to be available:
 
-1. **cloudflared** - Cloudflare Tunnel client
-   - Install: `brew install cloudflared`
-   - Verify: `which cloudflared`
+1. **ngrok** - ngrok tunnel client
+   - Install: `brew install ngrok` or download from https://ngrok.com
+   - Verify: `which ngrok`
 
 2. **OpenCode running** - Must have an active OpenCode TUI or web session
 
@@ -81,7 +83,7 @@ After running, the user will see:
 ────────────────────────────────────────────────────────────
 
   Tunnel ID:    tun_1234567890_abc123
-  URL:          https://xxx.trycloudflare.com/L1Vz.../session/ses_xxx
+  URL:          https://xxx.ngrok-free.dev/L1Vz.../session/ses_xxx
   Login:        opencode / 421481  🔐
   Session:      My Session Title
 
@@ -102,7 +104,7 @@ The OpenCode web UI uses this URL format:
 Example:
 - Directory: `/Users/tetsusoh/repos/project`
 - Base64: `L1VzZXJzL3RldHN1c29oL3JlcG9zL3Byb2plY3Q=`
-- Full URL: `https://xxx.trycloudflare.com/L1Vz.../session/ses_xxx`
+- Full URL: `https://xxx.ngrok-free.dev/L1Vz.../session/ses_xxx`
 
 ## Troubleshooting
 
@@ -112,9 +114,9 @@ If issues occur:
 - Ensure OpenCode TUI or web is running
 - Check ports 3333 and 4096
 
-**"Failed to start cloudflared"**
-- Install cloudflared: `brew install cloudflared`
-- Verify it's in PATH: `which cloudflared`
+**"Failed to start ngrok"**
+- Install ngrok: `brew install ngrok` or https://ngrok.com/download
+- Verify it's in PATH: `which ngrok`
 
 **Session doesn't open**
 - Verify the session exists and is active
@@ -152,7 +154,7 @@ node ~/.config/opencode/skills/opencode-tunnel/tunnel.js stop
 ```
 
 ## Limitations
-- Requires Cloudflare account (free tier works)
+- Requires ngrok account (free tier works)
 - Tunnel URL changes each time it's restarted
 - Only exposes the currently running session
 - Local machine must stay online
