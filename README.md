@@ -2,6 +2,8 @@
 
 Expose your OpenCode sessions to the internet via Cloudflare Tunnel for mobile and remote access.
 
+> **🤖 Fully Agentic:** This project — including all code, documentation, and bug fixes — was written entirely by LLM (Kimi K2.5 & Sonnet 4.6) in ([OpenCode](https://opencode.ai)).
+
 ## Features
 
 - 🌐 **Public URLs** - Access your OpenCode session from any device
@@ -12,13 +14,13 @@ Expose your OpenCode sessions to the internet via Cloudflare Tunnel for mobile a
 
 ## Requirements
 
-| Requirement | Notes |
-|-------------|-------|
-| **macOS** | Linux and Windows not yet supported |
-| **[Homebrew](https://brew.sh)** | Used to install `cloudflared` |
+| Requirement                                                                                                 | Notes                                                 |
+| ----------------------------------------------------------------------------------------------------------- | ----------------------------------------------------- |
+| **macOS**                                                                                                   | Linux and Windows not yet supported                   |
+| **[Homebrew](https://brew.sh)**                                                                             | Used to install `cloudflared`                         |
 | **[cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/)** | Cloudflare Tunnel client — `brew install cloudflared` |
-| **[OpenCode](https://opencode.ai)** | Must be running (TUI or web) before creating a tunnel |
-| **Node.js** | Already available if OpenCode is installed |
+| **[OpenCode](https://opencode.ai)**                                                                         | Must be running (TUI or web) before creating a tunnel |
+| **Node.js**                                                                                                 | Already available if OpenCode is installed            |
 
 > **No Cloudflare account needed.** The skill uses [Cloudflare Quick Tunnels](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/do-more-with-tunnels/trycloudflare/) (free, no sign-up, no configuration). The `cloudflared` binary handles everything automatically.
 
@@ -60,6 +62,7 @@ Just ask in your OpenCode session:
 ```
 
 The agent will:
+
 1. Find your running OpenCode session
 2. Start a password-protected headless OpenCode server
 3. Create a Cloudflare tunnel
@@ -69,9 +72,9 @@ The agent will:
 
 Every tunnel is protected with Basic authentication. When your browser prompts for credentials:
 
-| Field | Value |
-|-------|-------|
-| **Username** | `opencode` |
+| Field        | Value                                          |
+| ------------ | ---------------------------------------------- |
+| **Username** | `opencode`                                     |
 | **Password** | 6-digit code shown at creation (e.g. `421481`) |
 
 The credentials are displayed when the tunnel is created:
@@ -107,6 +110,7 @@ Shows all active tunnels with their IDs, URLs, login credentials, and status.
 ## How It Works
 
 The skill:
+
 1. Discovers your OpenCode server (port 3333 or 4096)
 2. Gets your current session info via the OpenCode API
 3. Starts a **headless** OpenCode server (`opencode serve`) with a random password set via `OPENCODE_SERVER_PASSWORD`
@@ -120,18 +124,19 @@ https://xxx.trycloudflare.com/{base64(directory)}/session/{session_id}
 ```
 
 Example:
+
 - Directory: `/Users/tetsusoh/repos/project`
 - Base64: `L1VzZXJzL3RldHN1c29oL3JlcG9zL3Byb2plY3Q=`
 - Full URL: `https://xxx.trycloudflare.com/L1Vz.../session/ses_xxx`
 
 ## Troubleshooting
 
-| Issue | Solution |
-|-------|----------|
-| "No OpenCode server found" | Ensure OpenCode TUI or web is running |
-| "Failed to start cloudflared" | Install with `brew install cloudflared` |
-| Browser shows login prompt | Username: `opencode`, Password: shown in `list` output |
-| Session doesn't open | Verify session exists and is active |
+| Issue                              | Solution                                                   |
+| ---------------------------------- | ---------------------------------------------------------- |
+| "No OpenCode server found"         | Ensure OpenCode TUI or web is running                      |
+| "Failed to start cloudflared"      | Install with `brew install cloudflared`                    |
+| Browser shows login prompt         | Username: `opencode`, Password: shown in `list` output     |
+| Session doesn't open               | Verify session exists and is active                        |
 | Tunnel stopped but process lingers | Run `node tunnel.js stop` — it kills all tracked processes |
 
 ## Limitations

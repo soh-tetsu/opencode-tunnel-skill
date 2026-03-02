@@ -12,12 +12,12 @@
  *   node tunnel.js stop [tunnel-id]   - Stop a tunnel (or all if no id provided)
  */
 
-const { execSync, spawn } = require('child_process');
-const http = require('http');
+const { execSync, spawn } = require('node:child_process');
+const http = require('node:http');
 const QRCode = require('qrcode');
-const fs = require('fs');
-const path = require('path');
-const os = require('os');
+const fs = require('node:fs');
+const path = require('node:path');
+const os = require('node:os');
 
 // Platform check - macOS only for now
 if (process.platform !== 'darwin') {
@@ -45,7 +45,7 @@ function loadTunnels() {
     if (fs.existsSync(TUNNEL_METADATA_FILE)) {
       return JSON.parse(fs.readFileSync(TUNNEL_METADATA_FILE, 'utf8'));
     }
-  } catch (e) {}
+  } catch (_e) {}
   return {};
 }
 
@@ -56,7 +56,7 @@ function saveTunnels(tunnels) {
 
 // Generate unique tunnel ID
 function generateTunnelId() {
-  return 'tun_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+  return `tun_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 }
 
 // Generate 6-digit numeric password
@@ -69,7 +69,7 @@ function isProcessRunning(pid) {
   try {
     process.kill(pid, 0);
     return true;
-  } catch (e) {
+  } catch (_e) {
     return false;
   }
 }
@@ -91,7 +91,7 @@ function cleanupDeadTunnels() {
       try {
         if (opencodeRunning) process.kill(tunnel.opencodePid, 'SIGTERM');
         if (tunnelRunning) process.kill(tunnel.tunnelPid, 'SIGTERM');
-      } catch (e) {}
+      } catch (_e) {}
       delete tunnels[id];
       modified = true;
     }
@@ -115,15 +115,13 @@ async function listTunnels() {
     return;
   }
   
-  console.log('\n' + '═'.repeat(70));
+  console.log(`\n${'═'.repeat(70)}`);
   console.log('  🌐 ACTIVE TUNNELS');
   console.log('═'.repeat(70));
   
   const sortedEntries = tunnelEntries.sort(([, a], [, b]) => a.createdAt - b.createdAt);
   for (const [id, tunnel] of sortedEntries) {
-    const status = isProcessRunning(tunnel.opencodePid) && isProcessRunning(tunnel.tunnelPid)
-      ? '🟢 RUNNING'
-      : '🟡 CHECKING';
+    const status = (isProcessRunning(tunnel.opencodePid) && isProcessRunning(tunnel.tunnelPid)) ? '🟢 RUNNING' : '🟡 CHECKING';
     const createdLabel = new Date(tunnel.createdAt).toISOString().replace('T', ' ').slice(0, 19);
     console.log(`\n  Tunnel ID:    ${id}  (created ${createdLabel})`);
     console.log(`  Status:       ${status}`);
@@ -159,14 +157,14 @@ async function stopTunnel(tunnelId) {
         process.kill(tunnel.tunnelPid, 'SIGTERM');
         log(`Killed cloudflared (PID: ${tunnel.tunnelPid})`);
       }
-    } catch (e) {}
+    } catch (_e) {}
     
     try {
       if (isProcessRunning(tunnel.opencodePid)) {
         process.kill(tunnel.opencodePid, 'SIGTERM');
         log(`Killed opencode server (PID: ${tunnel.opencodePid})`);
       }
-    } catch (e) {}
+    } catch (_e) {}
     
     delete tunnels[tunnelId];
     saveTunnels(tunnels);
@@ -191,13 +189,13 @@ async function stopTunnel(tunnelId) {
         if (isProcessRunning(tunnel.tunnelPid)) {
           process.kill(tunnel.tunnelPid, 'SIGTERM');
         }
-      } catch (e) {}
+      } catch (_e) {}
       
       try {
         if (isProcessRunning(tunnel.opencodePid)) {
           process.kill(tunnel.opencodePid, 'SIGTERM');
         }
-      } catch (e) {}
+      } catch (_e) {}
       
       delete tunnels[id];
     }
@@ -226,14 +224,14 @@ async function discoverPort() {
         log(`Found OpenCode on port ${result}`);
         return result;
       }
-    } catch (e) {}
+    } catch (_e) {}
   }
   
   try {
     const out = execSync('lsof -i -P 2>/dev/null | grep -E "\\.opencode|opencode" | grep LISTEN', { encoding: 'utf8', timeout: 5000 });
     const m = out.match(/:(\d+)\s*\(LISTEN\)/);
     if (m) { log(`Found on port ${m[1]}`); return parseInt(m[1], 10); }
-  } catch (e) {}
+  } catch (_e) {}
   
   return null;
 }
@@ -256,7 +254,7 @@ async function getSession(port, projectId) {
       let d = ''; res.on('data', c => d += c); res.on('end', () => {
         try {
           const sessions = JSON.parse(d);
-          let filtered = projectId ? sessions.filter(s => s.projectID === projectId) : sessions;
+          const filtered = projectId ? sessions.filter(s => s.projectID === projectId) : sessions;
           if (!filtered.length) { resolve(null); return; }
           filtered.sort((a, b) => b.time.updated - a.time.updated);
           resolve(filtered[0]);
@@ -286,7 +284,7 @@ function buildWebUrl(sessionDir, sessionId) {
 // Find available port
 function findAvailablePort(startPort = 5000) {
   return new Promise((resolve) => {
-    const net = require('net');
+    const net = require('node:net');
     const server = net.createServer();
     server.listen(startPort, () => { server.once('close', () => resolve(startPort)); server.close(); });
     server.on('error', () => resolve(findAvailablePort(startPort + 1)));
@@ -302,7 +300,7 @@ function startOpenCodeWithSession(projectDir, sessionId, port, password) {
     let opencodeBinary;
     try {
       // Try to find the binary by resolving the npm wrapper symlink
-      const { execSync } = require('child_process');
+      const { execSync } = require('node:child_process');
       const wrapperPath = execSync('which opencode', { encoding: 'utf8' }).trim();
       // Resolve symlink so dirname gives the real bin directory
       const resolvedPath = fs.realpathSync(wrapperPath);
@@ -313,7 +311,7 @@ function startOpenCodeWithSession(projectDir, sessionId, port, password) {
       } else {
         throw new Error('Binary not found');
       }
-    } catch (e) {
+    } catch (_e) {
       // Fallback: use the wrapper (it will exec the real binary)
       opencodeBinary = 'opencode';
     }
@@ -396,7 +394,7 @@ function startTunnel(port) {
       } else if (attempts > 30 && !resolved) {
         resolved = true;
         clearInterval(check);
-        try { cloudflared.kill(); } catch (e) {}
+        try { cloudflared.kill(); } catch (_e) {}
         reject(new Error('Tunnel timeout - could not extract URL from cloudflared'));
       }
     }, 1000);
@@ -419,10 +417,10 @@ function generateQRTerminal(url) {
 
 // Create new tunnel
 async function createTunnel() {
-  console.log('\n' + '='.repeat(60));
+  console.log(`\n${'='.repeat(60)}`);
   console.log('  🚀 OpenCode Tunnel Skill');
   console.log('  Expose your session to the internet via Cloudflare');
-  console.log('='.repeat(60) + '\n');
+  console.log(`${'='.repeat(60)}\n`);
   
   try {
     const port = await discoverPort();
@@ -484,37 +482,37 @@ async function createTunnel() {
     log(`Tunnel metadata saved: ${tunnelId}`);
     
     // Display results
-    console.log('\n' + '─'.repeat(60));
+    console.log(`\n${'─'.repeat(60)}`);
     console.log('  🌐 TUNNEL READY');
     console.log('─'.repeat(60));
-    console.log('\n  Tunnel ID:    ' + tunnelId);
-    console.log('  URL:          ' + fullUrl);
-    console.log('  Login:        opencode / ' + password + '  🔐');
-    console.log('  Session:      ' + sessionTitle);
-    console.log('  Session ID:   ' + sessionId);
-    console.log('\n' + '='.repeat(60));
+    console.log(`\n  Tunnel ID:    ${tunnelId}`);
+    console.log(`  URL:          ${fullUrl}`);
+    console.log(`  Login:        opencode / ${password}  🔐`);
+    console.log(`  Session:      ${sessionTitle}`);
+    console.log(`  Session ID:   ${sessionId}`);
+    console.log(`\n${'='.repeat(60)}`);
     console.log('  📱 SCAN THIS QR CODE WITH YOUR PHONE CAMERA');
     console.log('='.repeat(60));
     
     const terminalQR = await generateQRTerminal(fullUrl);
-    console.log('\n' + terminalQR);
-    console.log('\n' + '='.repeat(60));
+    console.log(`\n${terminalQR}`);
+    console.log(`\n${'='.repeat(60)}`);
     console.log('  👆 POINT YOUR PHONE CAMERA AT THE QR CODE ABOVE');
     console.log('  🖼️  QR code also opened in Preview for scanning');
-    console.log('  📋 URL: ' + fullUrl);
+    console.log(`  📋 URL: ${fullUrl}`);
     console.log('='.repeat(60));
     
     console.log('\n  ✅ Tunnel is running in background');
-    console.log('     Process IDs: opencode=' + opencodePid + ', tunnel=' + tunnelPid);
-    console.log('\n  🔐 Login: username=opencode  password=' + password);
+    console.log(`     Process IDs: opencode=${opencodePid}, tunnel=${tunnelPid}`);
+    console.log(`\n  🔐 Login: username=opencode  password=${password}`);
     console.log('\n  Commands:');
     console.log('     node tunnel.js list              - List all tunnels');
-    console.log('     node tunnel.js stop ' + tunnelId + '  - Stop this tunnel\n');
+    console.log(`     node tunnel.js stop ${tunnelId}  - Stop this tunnel\n`);
     
     // Open QR in Preview
     try {
       execSync(`open "${qrPath}"`);
-    } catch (e) {}
+    } catch (_e) {}
     
     // Exit cleanly after a short delay to ensure all writes are flushed
     setTimeout(() => process.exit(0), 100);
@@ -569,7 +567,7 @@ async function main() {
     default:
       if (!command) {
         // No command - interactive mode
-        const readline = require('readline');
+        const readline = require('node:readline');
         const rl = readline.createInterface({
           input: process.stdin,
           output: process.stdout
