@@ -13,20 +13,22 @@ Expose your OpenCode session to the internet via ngrok for mobile and remote acc
 
 ## Requirements
 
-| Requirement                                | Notes                                                 |
-| ------------------------------------------ | ----------------------------------------------------- |
-| **macOS**                                  | Linux and Windows not yet supported                   |
-| **[ngrok](https://ngrok.com/download)**    | Tunnel client — `brew install ngrok/ngrok/ngrok`      |
-| **[OpenCode](https://opencode.ai)**        | Must be running (TUI or web) before creating a tunnel |
-| **Node.js**                                | Already available if OpenCode is installed            |
+| Requirement                             | Notes                                                 |
+| --------------------------------------- | ----------------------------------------------------- |
+| **macOS**                               | Linux and Windows not yet supported                   |
+| **[ngrok](https://ngrok.com/download)** | Tunnel client — `brew install ngrok/ngrok/ngrok`      |
+| **[OpenCode](https://opencode.ai)**     | Must be running (TUI or web) before creating a tunnel |
+| **Node.js**                             | Already available if OpenCode is installed            |
 
 ### Installing ngrok
 
 ```bash
 # Install via Homebrew
-brew install ngrok/ngrok/ngrok
+brew install ngrok
 
-# Authenticate (free account required for persistent tunnels)
+# (Optional) Authenticate
+# - Without authtoken: random URL, 1 concurrent tunnel, session expires after a few hours
+# - With authtoken (free account): same random URL, but session is more stable and tied to your account dashboard
 ngrok config add-authtoken <your-token>
 
 # Verify
@@ -61,7 +63,7 @@ Just ask in your OpenCode session:
 
 The agent will:
 
-1. Find your running OpenCode session on port 3333
+1. Discover your running OpenCode server via `lsof`
 2. Create a password-protected ngrok tunnel pointing at it
 3. Display a QR code, public URL, and login credentials
 
@@ -88,7 +90,6 @@ And again any time with:
 
 > **Note:** On a free ngrok account, the first visit shows an interstitial warning page. Click "Visit Site" to proceed. This only appears once per browser session.
 
-
 ### List Running Tunnels
 
 ```
@@ -109,7 +110,7 @@ Shows all active tunnels with their IDs, URLs, and status.
 
 The skill:
 
-1. Discovers your running OpenCode server by polling the health endpoint on known ports (3333, 4096), falling back to `lsof` if needed
+1. Discovers your running OpenCode server using `lsof` to find the listening process dynamically
 2. Fetches current project and session metadata via the OpenCode API
 3. Generates a random 8-digit password for the tunnel
 4. Spawns a detached tunnel process with Basic Auth enabled, pointing it at the local OpenCode port — no second OpenCode instance is started
@@ -141,23 +142,23 @@ OpenCode uses [Server-Sent Events (SSE)](https://developer.mozilla.org/en-US/doc
 
 ngrok handles SSE correctly by preserving the HTTP/1.1 chunked transfer encoding that SSE relies on.
 
-| Feature                     | cloudflared      | ngrok         |
-| --------------------------- | ---------------- | ------------- |
-| SSE / streaming responses   | ❌ Broken        | ✅ Works      |
-| Free tier                   | ✅ No account    | ✅ Free tier  |
-| Persistent URL              | ❌ Ephemeral     | ❌ Ephemeral  |
-| First-visit interstitial    | ❌ None          | ⚠️ Warning    |
+| Feature                   | cloudflared   | ngrok        |
+| ------------------------- | ------------- | ------------ |
+| SSE / streaming responses | ❌ Broken     | ✅ Works     |
+| Free tier                 | ✅ No account | ✅ Free tier |
+| Persistent URL            | ❌ Ephemeral  | ❌ Ephemeral |
+| First-visit interstitial  | ❌ None       | ⚠️ Warning   |
 
 ## Troubleshooting
 
-| Issue                           | Solution                                                        |
-| ------------------------------- | --------------------------------------------------------------- |
-| "No OpenCode server found"      | Ensure OpenCode TUI or web is running                           |
-| "Failed to start ngrok"         | Install with `brew install ngrok/ngrok/ngrok`                   |
-| ngrok exits immediately         | Run `ngrok config add-authtoken <token>` first                  |
-| AI responses don't stream back  | This is the cloudflared SSE bug — use ngrok instead             |
-| Browser asks for login      | Username: `opencode`, Password: from `list` output              |
-| Session doesn't open            | Verify session exists and is active                             |
+| Issue                          | Solution                                            |
+| ------------------------------ | --------------------------------------------------- |
+| "No OpenCode server found"     | Ensure OpenCode TUI or web is running               |
+| "Failed to start ngrok"        | Install with `brew install ngrok/ngrok/ngrok`       |
+| ngrok exits immediately        | Run `ngrok config add-authtoken <token>` first      |
+| AI responses don't stream back | This is the cloudflared SSE bug — use ngrok instead |
+| Browser asks for login         | Username: `opencode`, Password: from `list` output  |
+| Session doesn't open           | Verify session exists and is active                 |
 
 ## Limitations
 

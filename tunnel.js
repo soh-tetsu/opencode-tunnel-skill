@@ -214,32 +214,14 @@ async function stopTunnel(tunnelId) {
   }
 }
 
-// Discover running OpenCode server
+// Discover running OpenCode server via lsof
 async function discoverPort() {
   log('Discovering OpenCode server...');
   
-  const ports = [3333, 4096];
-  
-  for (const port of ports) {
-    try {
-      const result = await new Promise((resolve) => {
-        const req = http.get(`http://localhost:${port}/global/health`, (res) => {
-          resolve(res.statusCode === 200 ? port : null);
-        });
-        req.on('error', () => resolve(null));
-        req.end();
-      });
-      if (result) {
-        log(`Found OpenCode on port ${result}`);
-        return result;
-      }
-    } catch (_e) {}
-  }
-  
   try {
-    const out = execSync('lsof -i -P 2>/dev/null | grep -E "\\.opencode|opencode" | grep LISTEN', { encoding: 'utf8', timeout: 5000 });
+    const out = execSync('lsof -i -P 2>/dev/null | grep -E ".opencode|opencode" | grep LISTEN', { encoding: 'utf8', timeout: 5000 });
     const m = out.match(/:(\d+)\s*\(LISTEN\)/);
-    if (m) { log(`Found on port ${m[1]}`); return parseInt(m[1], 10); }
+    if (m) { log(`Found OpenCode on port ${m[1]}`); return parseInt(m[1], 10); }
   } catch (_e) {}
   
   return null;
